@@ -106,6 +106,24 @@ class RunMetadataListener {
   virtual void BeforeClearRunMetadata() = 0;
 };
 
+class TensorHandle;
+class EagerOperation;
+
+class CustomDevice {
+ public:
+  virtual ~CustomDevice() {}
+  virtual const string& name() = 0;
+  virtual Status CopyTensorToDevice(TensorHandle* tensor,
+                                    TensorHandle** result) = 0;
+
+  virtual Status CopyTensorFromDevice(TensorHandle* tensor,
+                                      const string& target_device_name,
+                                      TensorHandle** result) = 0;
+
+  virtual Status Execute(EagerOperation* op, TensorHandle** retvals,
+                         int* num_retvals) = 0;
+};
+
 class EagerContext : public core::RefCounted {
  public:
   static const uint64 kInvalidContextId = 0;
@@ -214,7 +232,16 @@ class EagerContext : public core::RefCounted {
                         const FunctionDefLibrary& library,
                         const bool add_to_local_only = false);
 
+  const FunctionDef* GetFunctionDef(const string& function_name);
+
   Status RemoveFunction(const string& func);
+
+  // Wait for pending nodes to be finished in local executors (including context
+  // default executor and thread executors) and executors on remote workers.
+  // Return combined status of remote executors. If there are multiple errors,
+  // the Status code will be the same as the first remote executor that has
+  // errors, and the error message will be combined from all executors.
+  Status SyncExecutors();
 
   core::RefCountPtr<KernelAndDevice> GetCachedKernel(Fprint128 cache_key);
 
@@ -294,8 +321,8 @@ class EagerContext : public core::RefCounted {
   Status GetClient(const string& remote_task,
                    core::RefCountPtr<eager::EagerClient>* client);
 
-  uint64 GetContextId();
-  uint64 GetContextViewId();
+  uint64 GetContextId() const;
+  uint64 GetContextViewId() const;
   void IncrementContextViewId();
 
   // TODO(nareshmodi): Encapsulate remote state into a separate
@@ -416,6 +443,12 @@ class EagerContext : public core::RefCounted {
 
   Status FindDeviceFromName(const char* device_name, Device** device) const;
 
+  Status FindCustomDeviceFromName(const string& device_name,
+                                  CustomDevice** dev) const;
+
+  void RegisterCustomDevice(const string& name,
+                            std::unique_ptr<CustomDevice> device);
+
   bool OnSameTask(const Device* first, const Device* second) const;
   // Gets the CPU device on the task of device.
   Status CPUDeviceOnTask(const Device* device, Device** cpu_device) const;
@@ -492,6 +525,7 @@ class EagerContext : public core::RefCounted {
   std::vector<DeviceType> prioritized_device_type_list_;
   Rendezvous* rendezvous_;
   std::function<Rendezvous*(const int64)> rendezvous_creator_;
+  std::unordered_map<string, std::unique_ptr<CustomDevice>> custom_devices_;
 
   FunctionLibraryDefinition func_lib_def_{OpRegistry::Global(), {}};
 
@@ -571,11 +605,11 @@ class EagerContext : public core::RefCounted {
   std::shared_ptr<WorkerSession> worker_session_;
   std::unique_ptr<eager::EagerClientCache> remote_eager_workers_;
 
-  mutex remote_state_mu_;
+  mutable mutex remote_state_mu_;
 
   uint64 context_id_ GUARDED_BY(remote_state_mu_);
   // The view id of an eager context should be set to 0 when context is created,
-  // and continously incremented when context with the same context_id gets
+  // and continuously incremented when context with the same context_id gets
   // updated. The view id should be consistent between master and workers.
   uint64 context_view_id_ GUARDED_BY(remote_state_mu_);
   std::vector<string> remote_contexts_;

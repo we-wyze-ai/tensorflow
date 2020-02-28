@@ -67,7 +67,7 @@ def _concrete_tensor_to_proto(tensor):
 
 
 class _DumpingCallback(object):
-  """An object holding the states surrouding the dumping callback."""
+  """An object holding the states surrounding the dumping callback."""
 
   def __init__(self,
                dump_root,
@@ -790,7 +790,8 @@ def enable_dump_debug_info(dump_root,
       "Enabled dumping callback in thread %s "
       "(dump root: %s, tensor debug mode: %s)",
       threading.current_thread().name,
-      _state.dumping_callback.dump_root, tensor_debug_mode)
+      _state.dumping_callback.dump_root,
+      debug_event_pb2.TensorDebugMode.Name(tensor_debug_mode))
 
   atexit.register(disable_dump_debug_info)
   return _state.dumping_callback.get_writer()

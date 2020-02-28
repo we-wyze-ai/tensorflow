@@ -737,7 +737,7 @@ Status MetaOptimizer::Optimize(Cluster* cluster, const GrapplerItem& item,
         // TPU metadata and Grappler passes could prune that away. Grappler
         // passes could also cause issues around shape inference. Since the
         // desired and existing behavior is to not optimize TPU functions with
-        // Grappler, this check preserves that. The only execption is
+        // Grappler, this check preserves that. The only exception is
         // implementation selector what is required to swap in some TPU specific
         // lowering code and is verified the work correctly on TPUs.
         ImplementationSelector implementation_selector;
@@ -799,11 +799,6 @@ void MetaOptimizer::PrintResult() {
       LOG(INFO) << "  " << result.optimizer_name << ": " << result.message;
     }
   }
-}
-
-void MetaOptimizer::Feedback(Cluster* cluster, const GrapplerItem& item,
-                             const GraphDef& optimized_graph, double result) {
-  // Nothing to do for MetaOptimizer.
 }
 
 bool MetaOptimizerEnabled(const ConfigProto& cfg) {

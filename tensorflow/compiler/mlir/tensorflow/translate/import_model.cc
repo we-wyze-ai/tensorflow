@@ -42,7 +42,7 @@ limitations under the License.
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Analysis/Verifier.h"  // TF:llvm-project
-#include "mlir/Dialect/StandardOps/Ops.h"  // TF:llvm-project
+#include "mlir/Dialect/StandardOps/IR/Ops.h"  // TF:llvm-project
 #include "mlir/IR/Attributes.h"  // TF:llvm-project
 #include "mlir/IR/Builders.h"  // TF:llvm-project
 #include "mlir/IR/Function.h"  // TF:llvm-project
@@ -51,6 +51,7 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"  // TF:llvm-project
 #include "mlir/IR/Module.h"  // TF:llvm-project
 #include "mlir/IR/OpDefinition.h"  // TF:llvm-project
+#include "mlir/IR/StandardTypes.h"  // TF:llvm-project
 #include "mlir/IR/Types.h"  // TF:llvm-project
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
 #include "tensorflow/compiler/mlir/op_or_arg_name_mapper.h"
@@ -63,6 +64,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/mangling_util.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
 #include "tensorflow/compiler/tf2xla/functionalize_control_flow.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/common_runtime/function.h"
@@ -135,24 +137,6 @@ class NameUniquifier : public OpOrArgNameMapper {
 
   const FunctionLibraryDefinition& flib_;
 };
-
-// Populates the tf.versions attribute on a module, given a corresponding
-// graph VersionDef proto.
-void PopulateTfVersions(mlir::ModuleOp module,
-                        const VersionDef& graph_versions) {
-  mlir::Builder b(module.getContext());
-  auto producer = b.getNamedAttr(
-      "producer", b.getI32IntegerAttr(graph_versions.producer()));
-  auto min_consumer = b.getNamedAttr(
-      "min_consumer", b.getI32IntegerAttr(graph_versions.min_consumer()));
-  auto bad_consumers = b.getNamedAttr(
-      "bad_consumers", b.getI32ArrayAttr(llvm::ArrayRef<int32_t>(
-                           graph_versions.bad_consumers().begin(),
-                           graph_versions.bad_consumers().end())));
-  module.setAttr("tf.versions",
-                 b.getDictionaryAttr(llvm::ArrayRef<mlir::NamedAttribute>(
-                     {producer, min_consumer, bad_consumers})));
-}
 
 // Stateful helper class to import a TensorFlow model into an MLIR Module.
 //
@@ -1865,8 +1849,8 @@ StatusOr<mlir::OwningModuleRef> GraphDefImporter::Convert(
     TF_ASSIGN_OR_RETURN(func_type, importer.InferMainFunctionType(
                                        specs, context, &arg_nodes, &ret_nodes));
 
-    // TODO(prakalps): Refactor to keep attribute strings (tf.entry_function,
-    // tf.versions) shared by importer and exporter in a centralized place.
+    // TODO(prakalps): Refactor to keep tf.entry_function attribute encoding and
+    // decoding in a centralized place.
     // Record the input and output mapping.
     if (!specs.inputs.empty() || !specs.outputs.empty()) {
       mlir::Builder b(context);
@@ -2515,6 +2499,51 @@ void StructuredValueLinearizer::RecursivelyFindLeaves(
   }
 }
 
+// For exported functions with bound inputs, rewrite the function
+// signature to match the requirements of tf_saved_model bound input args.
+//
+// The raw imported functions have `tensor<*x!tf.resource>` as the type for
+// mutable bound inputs and `tensor<...>` as the type for immutable
+// bound inputs. Here we canonicalize both of them into
+// `tensor<!tf.resource<tensor<...>>>`.
+void AdjustBoundInputArgTypes(mlir::ModuleOp module) {
+  mlir::SymbolTable symbol_table(module);
+  for (auto func : module.getOps<mlir::FuncOp>()) {
+    if (!mlir::tf_saved_model::IsExported(func)) continue;
+    mlir::OpBuilder builder(func.getBody());
+    llvm::SmallVector<mlir::Type, 4> new_input_types;
+    for (int i = 0, e = func.getNumArguments(); i < e; i++) {
+      auto arg = func.front().getArgument(i);
+      auto global_tensor =
+          mlir::tf_saved_model::LookupBoundInput(func, i, symbol_table);
+      if (global_tensor) {
+        auto old_type = arg.getType();
+        auto new_type =
+            mlir::tf_saved_model::GetBoundInputArgTypeFor(global_tensor);
+        arg.setType(new_type);
+        if (global_tensor.is_mutable()) {
+          auto arg_with_original_type = builder.create<mlir::TF::CastOp>(
+              global_tensor.getLoc(), old_type, arg,
+              /*Truncate=*/builder.getBoolAttr(false));
+          arg.replaceAllUsesWith(arg_with_original_type);
+          // The RAUW replaces the arg with itself, so we need to set it back.
+          arg_with_original_type.setOperand(arg);
+        } else {
+          auto arg_with_original_type =
+              builder.create<mlir::TF::ReadVariableOp>(global_tensor.getLoc(),
+                                                       old_type, arg);
+          arg.replaceAllUsesWith(arg_with_original_type);
+          // The RAUW replaces the arg with itself, so we need to set it back.
+          arg_with_original_type.setOperand(arg);
+        }
+      }
+      new_input_types.push_back(arg.getType());
+    }
+    func.setType(mlir::FunctionType::get(
+        new_input_types, func.getType().getResults(), module.getContext()));
+  }
+}
+
 // Reorder the ops in the module to make testing easier and less dependent
 // on implementation details such as the order of functions in the
 // FunctionDefLibrary.
@@ -2755,6 +2784,7 @@ Status CreateSavedModelIR(
           builder.getStrArrayAttr(object_names.GetExportedNames(node_id)));
     }
   }
+  AdjustBoundInputArgTypes(module);
   module.setAttr("tf_saved_model.semantics", builder.getUnitAttr());
   SortSavedModelModule(module);
   return Status::OK();

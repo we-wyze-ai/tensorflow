@@ -55,6 +55,10 @@ message QueueItem {
     // Takes a FunctionDef and makes it enqueable on the remote worker.
     RegisterFunctionOp register_function = 4;
     CleanupFunctionOp cleanup_function = 5;
+    // A remote executor is created to execute ops/functions asynchronously
+    // enqueued in streaming call. Request with this item type waits for pending
+    // nodes to finish on the remote executor and report status.
+    SyncRemoteExecutorForStream sync_remote_executor_for_stream = 6;
   }
 }
 
@@ -191,6 +195,8 @@ message RegisterFunctionOp {
 message CleanupFunctionOp {
   int64 step_id = 1;
 }
+
+message SyncRemoteExecutorForStream {}
 
 message SendTensorOp {
   // All remote tensors are identified by <Op ID, Output num>. To mimic this
