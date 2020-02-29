@@ -301,10 +301,10 @@ void RunInference(Settings* s) {
     const float score = scores[i];
     if (score < threshold) 
         continue;
-    const float left = locations[4*i];
-    const float top = locations[4*i + 1];
-    const float bottom = locations[4*i + 2];
-    const float right = locations[4*i + 3];
+    const int left = locations[4*i] * image_width;
+    const int top = locations[4*i + 1] * image_height;
+    const int bottom = locations[4*i + 2] * image_height;
+    const int right = locations[4*i + 3] * image_width;
     const int class_index = classes[i];
     const auto output_class = labels[class_index+1];
     LOG(INFO) << score << " " << class_index << ":"  << output_class << " | (" <<  left << ", " << top << ", " << bottom << ", " << right << ")\n";
