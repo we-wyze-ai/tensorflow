@@ -281,40 +281,33 @@ void RunInference(Settings* s) {
     }
   }
 
-  const float threshold = 0.001f;
-
-  std::vector<std::pair<float, int>> top_results;
+  const float threshold = 0.3f;
 
   int output = interpreter->outputs()[0];
-  TfLiteIntArray* output_dims = interpreter->tensor(output)->dims;
-  // assume output dims to be something like (1, 1, ... ,size)
-  auto output_size = output_dims->data[output_dims->size - 1];
-  switch (interpreter->tensor(output)->type) {
-    case kTfLiteFloat32:
-      get_top_n<float>(interpreter->typed_output_tensor<float>(0), output_size,
-                       s->number_of_results, threshold, &top_results, true);
-      break;
-    case kTfLiteUInt8:
-      get_top_n<uint8_t>(interpreter->typed_output_tensor<uint8_t>(0),
-                         output_size, s->number_of_results, threshold,
-                         &top_results, false);
-      break;
-    default:
-      LOG(FATAL) << "cannot handle output type "
-                 << interpreter->tensor(output)->type << " yet";
-      exit(-1);
-  }
-
   std::vector<string> labels;
   size_t label_count;
-
   if (ReadLabelsFile(s->labels_file_name, &labels, &label_count) != kTfLiteOk)
     exit(-1);
+  
+  LOG(INFO) << "Total number of labels: " << label_count << "\n";
 
-  for (const auto& result : top_results) {
-    const float confidence = result.first;
-    const int index = result.second;
-    LOG(INFO) << confidence << ": " << index << " " << labels[index] << "\n";
+  float* locations = interpreter->typed_output_tensor<float>(0);
+  float* classes = interpreter->typed_output_tensor<float>(1);
+  float* scores = interpreter->typed_output_tensor<float>(2);
+  const int num_detections = interpreter->typed_output_tensor<float>(3)[0];
+
+  LOG(INFO) << "Total number of detection: " << num_detections << "\n";
+  for (int i = 0; i < num_detections; i++) {
+    const float score = scores[i];
+    if (score < threshold) 
+        continue;
+    const float left = locations[4*i];
+    const float top = locations[4*i + 1];
+    const float bottom = locations[4*i + 2];
+    const float right = locations[4*i + 3];
+    const int class_index = classes[i];
+    const auto output_class = labels[class_index+1];
+    LOG(INFO) << score << " " << class_index << ":"  << output_class << " | (" <<  left << ", " << top << ", " << bottom << ", " << right << ")\n";
   }
 }
 
